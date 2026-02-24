@@ -86,6 +86,13 @@ _etf_realtime_cache: Dict[str, Any] = {
     'ttl': 1200  # 20分钟缓存有效期
 }
 
+# 港股实时行情缓存
+_hk_realtime_cache: Dict[str, Any] = {
+    'data': None,
+    'timestamp': 0,
+    'ttl': 1200  # 20分钟缓存有效期
+}
+
 
 def _is_etf_code(stock_code: str) -> bool:
     """
@@ -1143,22 +1150,35 @@ class AkshareFetcher(BaseFetcher):
         source_key = "akshare_hk"
         
         try:
-            # 防封禁策略
-            self._set_random_user_agent()
-            self._enforce_rate_limit()
-            
             # 确保代码格式正确（5位数字）
             code = stock_code.lower().replace('hk', '').zfill(5)
-            
-            logger.info(f"[API调用] ak.stock_hk_spot_em() 获取港股实时行情...")
-            import time as _time
-            api_start = _time.time()
-            
-            df = ak.stock_hk_spot_em()
-            
-            api_elapsed = _time.time() - api_start
-            logger.info(f"[API返回] ak.stock_hk_spot_em 成功: 返回 {len(df)} 只港股, 耗时 {api_elapsed:.2f}s")
-            circuit_breaker.record_success(source_key)
+
+            # 检查缓存
+            current_time = time.time()
+            if (_hk_realtime_cache['data'] is not None and
+                    current_time - _hk_realtime_cache['timestamp'] < _hk_realtime_cache['ttl']):
+                df = _hk_realtime_cache['data']
+                cache_age = int(current_time - _hk_realtime_cache['timestamp'])
+                logger.debug(f"[缓存命中] 港股实时行情 - 缓存年龄 {cache_age}s/{_hk_realtime_cache['ttl']}s")
+            else:
+                # 防封禁策略
+                self._set_random_user_agent()
+                self._enforce_rate_limit()
+
+                logger.info(f"[API调用] ak.stock_hk_spot_em() 获取港股实时行情...")
+                import time as _time
+                api_start = _time.time()
+
+                df = ak.stock_hk_spot_em()
+
+                api_elapsed = _time.time() - api_start
+                logger.info(f"[API返回] ak.stock_hk_spot_em 成功: 返回 {len(df)} 只港股, 耗时 {api_elapsed:.2f}s")
+                circuit_breaker.record_success(source_key)
+
+                # 更新缓存
+                _hk_realtime_cache['data'] = df
+                _hk_realtime_cache['timestamp'] = current_time
+                logger.info(f"[缓存更新] 港股实时行情缓存已刷新，TTL={_hk_realtime_cache['ttl']}s")
             
             # 查找指定港股
             row = df[df['代码'] == code]
